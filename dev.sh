@@ -29,7 +29,7 @@ ENV_FILE="$SCRIPT_DIR/.env"
 
 DEFAULT_AGENTFIELD_URL="http://localhost:8080"
 
-# Ordered list of agent module paths (module : node_id)
+# Ordered list of agent module paths
 declare -A AGENTS=(
   [ingestion]="agents.ingestion_agent"
   [classification]="agents.classification_agent"
@@ -40,6 +40,19 @@ declare -A AGENTS=(
   [communication]="agents.communication_agent"
   [learning]="agents.learning_agent"
   [human_review]="agents.human_review_agent"
+)
+
+# Fixed port per agent (avoids race condition when auto_port starts all at once)
+declare -A AGENT_PORTS=(
+  [ingestion]=8001
+  [classification]=8002
+  [enrichment]=8003
+  [decision_planning]=8004
+  [execution]=8005
+  [validation]=8006
+  [communication]=8007
+  [learning]=8008
+  [human_review]=8009
 )
 
 # Colour helpers (disabled when not a terminal)
@@ -175,8 +188,9 @@ start_agent() {
     return
   fi
 
+  local port="${AGENT_PORTS[$name]}"
   AGENTFIELD_SERVER="$agentfield_url" \
-    python -c "import asyncio; from $module import app; asyncio.run(app.start())" \
+    python -c "from $module import app; app.run(port=$port)" \
     >> "$lf" 2>&1 &
 
   echo $! > "$pf"
@@ -211,6 +225,7 @@ cmd_start() {
 
   for name in "${!AGENTS[@]}"; do
     start_agent "$name" "${AGENTS[$name]}" "$agentfield_url"
+    sleep 0.5   # stagger starts to avoid port-availability race condition
   done
 
   echo ""
@@ -224,6 +239,25 @@ cmd_stop() {
 
   for name in "${!AGENTS[@]}"; do
     stop_agent "$name"
+  done
+
+  # Kill any orphaned processes still holding agent ports
+  for port in "${AGENT_PORTS[@]}"; do
+    local pid
+    pid=$(ss -tlnp "sport = :$port" 2>/dev/null | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}')
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  done
+
+  # Wait until all agent ports are confirmed free (up to 10 s)
+  local deadline=$(( $(date +%s) + 10 ))
+  while true; do
+    local busy=0
+    for port in "${AGENT_PORTS[@]}"; do
+      ss -tlnp "sport = :$port" 2>/dev/null | grep -q LISTEN && busy=1 && break
+    done
+    [ "$busy" -eq 0 ] && break
+    [ "$(date +%s)" -ge "$deadline" ] && warn "Timed out waiting for ports to be released" && break
+    sleep 1
   done
 
   echo ""
