@@ -32,6 +32,7 @@ ENV/
 .coverage
 htmlcov/
 coverage.xml
+schemas/__pycache__/
 
 # ── IDEs ──────────────────────────────────────────────────────────────────────
 .vscode/
