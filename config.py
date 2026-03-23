@@ -7,7 +7,11 @@ load_dotenv()
 class Config:
     # AgentField
     AGENTFIELD_SERVER = os.getenv("AGENTFIELD_SERVER", "http://localhost:8080")
-    AI_MODEL = os.getenv("AI_MODEL", "anthropic/claude-opus-4")
+    AI_MODEL = os.getenv("AI_MODEL", "openai/gpt-4o")
+
+    # OpenRouter
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 
     # ServiceNow
     SERVICENOW_INSTANCE = os.getenv("SERVICENOW_INSTANCE")

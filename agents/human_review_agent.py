@@ -16,7 +16,11 @@ from config import Config
 app = Agent(
     node_id="human_review_agent",
     agentfield_server=Config.AGENTFIELD_SERVER,
-    ai_config=AIConfig(model=Config.AI_MODEL),
+    ai_config=AIConfig(
+        model=Config.AI_MODEL,
+        api_key=Config.OPENROUTER_API_KEY,
+        base_url=Config.OPENROUTER_BASE_URL,
+    ),
 )
 
 # Map of stage → next agent skill to resume after approval
