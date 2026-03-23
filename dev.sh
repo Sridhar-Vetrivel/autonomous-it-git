@@ -42,18 +42,6 @@ declare -A AGENTS=(
   [human_review]="agents.human_review_agent"
 )
 
-# Fixed port per agent (avoids race condition when auto_port starts all at once)
-declare -A AGENT_PORTS=(
-  [ingestion]=8001
-  [classification]=8002
-  [enrichment]=8003
-  [decision_planning]=8004
-  [execution]=8005
-  [validation]=8006
-  [communication]=8007
-  [learning]=8008
-  [human_review]=8009
-)
 
 # Colour helpers (disabled when not a terminal)
 if [ -t 1 ]; then
@@ -188,9 +176,8 @@ start_agent() {
     return
   fi
 
-  local port="${AGENT_PORTS[$name]}"
   AGENTFIELD_SERVER="$agentfield_url" \
-    python -c "from $module import app; app.run(port=$port)" \
+    python -c "from $module import app; app.run(auto_port=True)" \
     >> "$lf" 2>&1 &
 
   echo $! > "$pf"
@@ -241,22 +228,16 @@ cmd_stop() {
     stop_agent "$name"
   done
 
-  # Kill any orphaned processes still holding agent ports
-  for port in "${AGENT_PORTS[@]}"; do
-    local pid
-    pid=$(ss -tlnp "sport = :$port" 2>/dev/null | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}')
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  # Kill any orphaned agent processes not tracked by PID files
+  local module
+  for module in "${AGENTS[@]}"; do
+    pkill -f "app.run.*auto_port" 2>/dev/null || true
   done
 
-  # Wait until all agent ports are confirmed free (up to 10 s)
+  # Wait until all our agent processes are fully gone (up to 10 s)
   local deadline=$(( $(date +%s) + 10 ))
-  while true; do
-    local busy=0
-    for port in "${AGENT_PORTS[@]}"; do
-      ss -tlnp "sport = :$port" 2>/dev/null | grep -q LISTEN && busy=1 && break
-    done
-    [ "$busy" -eq 0 ] && break
-    [ "$(date +%s)" -ge "$deadline" ] && warn "Timed out waiting for ports to be released" && break
+  while pgrep -f "from agents\..* import app" > /dev/null 2>&1; do
+    [ "$(date +%s)" -ge "$deadline" ] && warn "Timed out waiting for agent processes to exit" && break
     sleep 1
   done
 
