@@ -15,11 +15,7 @@ from config import Config
 app = Agent(
     node_id="decision_planning_agent",
     agentfield_server=Config.AGENTFIELD_SERVER,
-    ai_config=AIConfig(
-        model=Config.AI_MODEL,
-        api_key=Config.OPENROUTER_API_KEY,
-        base_url=Config.OPENROUTER_BASE_URL,
-    ),
+    ai_config=AIConfig(model=Config.AI_MODEL),
 )
 
 
