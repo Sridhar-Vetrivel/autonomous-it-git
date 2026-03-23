@@ -1,0 +1,161 @@
+version: "3.9"
+
+services:
+  # ── AgentField Control Plane ─────────────────────────────────────────────────
+  agentfield-control-plane:
+    image: agentfield/control-plane:latest
+    ports:
+      - "8080:8080"
+    environment:
+      LOG_LEVEL: info
+      DB_URL: postgres://agentfield:password@db:5432/agentfield
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Postgres (state store) ────────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: agentfield
+      POSTGRES_USER: agentfield
+      POSTGRES_PASSWORD: password
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentfield"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Ingestion Agent ───────────────────────────────────────────────────────────
+  ingestion-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.ingestion_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      SERVICENOW_INSTANCE: ${SERVICENOW_INSTANCE}
+      SERVICENOW_API_KEY: ${SERVICENOW_API_KEY}
+      SERVICENOW_TABLE: ${SERVICENOW_TABLE:-sc_task}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Classification Agent ──────────────────────────────────────────────────────
+  classification-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.classification_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      CLASSIFICATION_CONFIDENCE_THRESHOLD: ${CLASSIFICATION_CONFIDENCE_THRESHOLD:-0.7}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Enrichment Agent ──────────────────────────────────────────────────────────
+  enrichment-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.enrichment_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      KNOWLEDGE_BASE_URL: ${KNOWLEDGE_BASE_URL}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Decision & Planning Agent ─────────────────────────────────────────────────
+  decision-planning-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.decision_planning_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      RISK_ESCALATION_THRESHOLD: ${RISK_ESCALATION_THRESHOLD:-0.6}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Execution Agent ───────────────────────────────────────────────────────────
+  execution-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.execution_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      RETRY_ATTEMPTS: ${RETRY_ATTEMPTS:-3}
+      TIMEOUT_SECONDS: ${TIMEOUT_SECONDS:-300}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Validation Agent ──────────────────────────────────────────────────────────
+  validation-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.validation_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Communication Agent ───────────────────────────────────────────────────────
+  communication-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.communication_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      NOTIFICATION_WEBHOOK_URL: ${NOTIFICATION_WEBHOOK_URL}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Learning Agent ────────────────────────────────────────────────────────────
+  learning-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.learning_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+  # ── Human Review Agent ────────────────────────────────────────────────────────
+  human-review-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -c "import asyncio; from agents.human_review_agent import app; asyncio.run(app.start())"
+    environment:
+      AGENTFIELD_SERVER: http://agentfield-control-plane:8080
+      AI_MODEL: ${AI_MODEL:-anthropic/claude-opus-4}
+      HUMAN_REVIEW_QUEUE_URL: ${HUMAN_REVIEW_QUEUE_URL}
+    depends_on:
+      - agentfield-control-plane
+    restart: unless-stopped
+
+volumes:
+  db_data:
