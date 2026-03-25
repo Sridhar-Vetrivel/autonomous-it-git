@@ -6,6 +6,7 @@ in session memory before handing off to the Classification Agent.
 """
 
 import asyncio
+import json
 from typing import Dict, List
 from datetime import datetime
 
@@ -131,14 +132,14 @@ async def store_to_memory(arguments: Dict) -> Dict:
     ticket_id = arguments["ticket_id"]
     normalized_ticket = arguments["normalized_ticket"]
 
-    await app.memory.set("session", "current_ticket", normalized_ticket)
+    await app.memory.set("current_ticket", normalized_ticket)
 
-    history: List[str] = await app.memory.get("session", "ticket_history") or []
+    history: List[str] = await app.memory.get("ticket_history") or []
     if not isinstance(history, list):
         history = []
     if ticket_id not in history:
         history.append(ticket_id)
-    await app.memory.set("session", "ticket_history", history)
+    await app.memory.set("ticket_history", history)
     print(f"[INGESTION] Stored ticket {ticket_id} in session memory (history size: {len(history)})")
 
     return {"status": "stored", "ticket_id": ticket_id, "memory_key": "session.current_ticket"}
@@ -149,27 +150,47 @@ async def store_to_memory(arguments: Dict) -> Dict:
 @app.reasoner()
 async def parse_ticket_content(arguments: Dict) -> Dict:
     """
-    Use AI to validate edge cases and surface data-quality issues in a ticket.
+    Use LLM to extract structured meaning from free-text ticket descriptions.
+    Identifies symptoms, affected systems, urgency cues, and user intent
+    even from poorly written tickets. Result is stored for downstream agents.
+
+    Output keys: symptoms, affected_systems, urgency_cues, user_intent, summary
     """
     td = arguments.get("ticket_data", {})
 
+    print(f"[INGESTION][LLM] Calling OpenRouter ({Config.AI_MODEL}) to extract meaning from ticket {td.get('number')}...")
     response = await app.ai(
         system=(
-            "You are an IT ticket validation expert. Analyse the ticket for "
-            "missing required fields, inconsistencies, or data quality issues. "
-            "Return a JSON object with keys: is_valid (bool), issues (list of "
-            "strings), recommendations (list of strings)."
+            "You are an IT support analyst. Extract structured meaning from ticket descriptions. "
+            "Return a JSON object with these keys:\n"
+            "  symptoms: list of specific problems or error symptoms described\n"
+            "  affected_systems: list of systems, apps, or services impacted\n"
+            "  urgency_cues: list of phrases indicating urgency or business impact\n"
+            "  user_intent: one-sentence summary of what the user actually needs\n"
+            "  summary: 2-3 sentence plain-English summary of the ticket\n"
+            "Extract meaning even from vague or poorly written descriptions."
         ),
         user=(
-            f"Ticket number: {td.get('number')}\n"
             f"Title: {td.get('short_description')}\n"
             f"Description: {td.get('description')}\n"
-            f"Requester: {td.get('requested_for')}\n"
-            f"Priority: {td.get('priority')}\n\n"
-            "Identify any issues and provide recommendations."
+            f"Requested item: {td.get('requested_item')}\n"
+            f"Priority: {td.get('priority')}\n"
         ),
     )
-    return response
+    # app.ai() returns a MultimodalResponse; extract text and parse JSON
+    raw_text = response.text.strip()
+    print(f"[INGESTION][LLM] OpenRouter raw response: {raw_text[:300]}")
+    try:
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        result = json.loads(raw_text)
+    except json.JSONDecodeError:
+        print(f"[INGESTION][LLM] Warning: could not parse LLM response as JSON, storing raw text")
+        result = {"summary": raw_text, "symptoms": [], "affected_systems": [], "urgency_cues": [], "user_intent": ""}
+    print(f"[INGESTION][LLM] Extracted: intent='{result.get('user_intent')}', systems={result.get('affected_systems')}, symptoms={result.get('symptoms')}")
+    return result
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -188,7 +209,7 @@ def _categorize_service_type(requested_item: str) -> str:
 
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
-
+@app.skill()
 async def process_incoming_ticket(ticket_payload: Dict) -> Dict:
     """
     Main ingestion flow: parse → normalize → store → hand off to classification.
@@ -198,23 +219,30 @@ async def process_incoming_ticket(ticket_payload: Dict) -> Dict:
     print(f"[INGESTION] Processing ticket: {ticket_payload.get('number', 'UNKNOWN')}")
     try:
         # 1. Parse
-        print(f"[INGESTION] Step 1/4: Parsing ServiceNow payload...")
+        print(f"[INGESTION] Step 1/5: Parsing ServiceNow payload...")
         ticket_data = await batch_ticket_from_servicenow({"ticket_payload": ticket_payload})
 
-        # 2. Normalize
-        print(f"[INGESTION] Step 2/4: Normalizing ticket fields...")
+        # 2. LLM semantic extraction via reasoner
+        print(f"[INGESTION] Step 2/5: Extracting structured meaning (reasoner → OpenRouter)...")
+        parsed_content = await parse_ticket_content({"ticket_data": ticket_data})
+        print(f"[INGESTION] Extraction complete: intent='{parsed_content.get('user_intent')}', systems={parsed_content.get('affected_systems')}")
+
+        # 3. Normalize
+        print(f"[INGESTION] Step 3/5: Normalizing ticket fields...")
         normalized = await normalize_ticket_fields({"ticket_data": ticket_data})
 
-        # 3. Attachments
-        print(f"[INGESTION] Step 3/4: Extracting attachments...")
+        # 4. Attachments
+        print(f"[INGESTION] Step 4/5: Extracting attachments...")
         attach_result = await extract_attachments({"ticket_data": ticket_data})
         print(f"[INGESTION] Attachments found: {attach_result.get('attachment_count', 0)}")
 
-        # 4. Store in memory
-        print(f"[INGESTION] Step 4/4: Storing to session memory...")
+        # 5. Store in memory (normalized ticket + parsed content for downstream agents)
+        print(f"[INGESTION] Step 5/5: Storing to session memory...")
         await store_to_memory({"ticket_id": ticket_data["number"], "normalized_ticket": normalized})
+        await app.memory.set("parsed_ticket_content", parsed_content)
+        print(f"[INGESTION] Stored parsed content in memory (key: parsed_ticket_content) — available to classification, enrichment, decision agents")
 
-        # 5. Trigger classification
+        # Trigger classification
         print(f"[INGESTION] Handing off to classification_agent for ticket {ticket_data['number']}...")
         print(f"{'='*60}\n")
         await app.call(

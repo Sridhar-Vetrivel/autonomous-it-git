@@ -118,7 +118,7 @@ docker-compose logs -f agentfield-control-plane
 curl -X POST http://localhost:8080/api/v1/execute/ingestion_agent.batch_ticket_from_servicenow \
   -H "Content-Type: application/json" \
   -d '{
-    "input": {
+    "arguments": {
       "ticket_payload": {
         "number": "SCTASK0802841",
         "short_description": "VPN Access Required",

@@ -529,29 +529,51 @@ async def store_to_memory(arguments) -> Dict:
 # ==================== REASONER ====================
 
 @app.reasoner()
-async def parse_ticket_content(arguments) -> Dict:
+async def parse_ticket_content(arguments: Dict) -> Dict:
     """
-    Use AI to validate and handle edge cases in ticket parsing.
+    Use LLM to extract structured meaning from free-text ticket descriptions.
+    Identifies symptoms, affected systems, urgency cues, and user intent
+    even from poorly written tickets. Result is stored for downstream agents.
+
+    Output keys: symptoms, affected_systems, urgency_cues, user_intent, summary
     """
-    ticket_data = arguments.get("ticket_data", {})
-    
+    td = arguments.get("ticket_data", {})
+
+    print(f"[INGESTION][LLM] Calling OpenRouter ({Config.AI_MODEL}) to extract meaning from ticket {td.get('number')}...")
     response = await app.ai(
-        system="""You are a ticket validation expert. Analyze the ticket 
-        for missing required fields, inconsistencies, or data quality issues.
-        Return a structured validation result.""",
-        user=f"""Please validate this ticket:
-        
-        Number: {ticket_data.get('number')}
-        Title: {ticket_data.get('short_description')}
-        Description: {ticket_data.get('description')}
-        Requester: {ticket_data.get('requested_for')}
-        Priority: {ticket_data.get('priority')}
-        
-        Identify any issues and provide recommendations.""",
-        schema=TicketValidationResult
+        system=(
+            "You are an IT support analyst. Extract structured meaning from ticket descriptions. "
+            "Return a JSON object with these keys:\n"
+            "  symptoms: list of specific problems or error symptoms described\n"
+            "  affected_systems: list of systems, apps, or services impacted\n"
+            "  urgency_cues: list of phrases indicating urgency or business impact\n"
+            "  user_intent: one-sentence summary of what the user actually needs\n"
+            "  summary: 2-3 sentence plain-English summary of the ticket\n"
+            "Extract meaning even from vague or poorly written descriptions."
+        ),
+        user=(
+            f"Title: {td.get('short_description')}\n"
+            f"Description: {td.get('description')}\n"
+            f"Requested item: {td.get('requested_item')}\n"
+            f"Priority: {td.get('priority')}\n"
+        ),
     )
-    
-    return response.model_dump()
+    # app.ai() returns a MultimodalResponse; extract text and parse JSON
+    raw_text = response.text.strip()
+    print(f"[INGESTION][LLM] OpenRouter raw response: {raw_text[:300]}")
+    try:
+        if raw_text.startswith("```"):
+            raw_text = raw_text.split("```")[1]
+            if raw_text.startswith("json"):
+                raw_text = raw_text[4:]
+        result = json.loads(raw_text)
+    except json.JSONDecodeError:
+        print(f"[INGESTION][LLM] Warning: could not parse LLM response as JSON, storing raw text")
+        result = {"summary": raw_text, "symptoms": [], "affected_systems": [], "urgency_cues": [], "user_intent": ""}
+    print(f"[INGESTION][LLM] Extracted: intent='{result.get('user_intent')}', systems={result.get('affected_systems')}, symptoms={result.get('symptoms')}")
+    return result
+
+Downstream agents (classification, enrichment, decision) can call app.memory.get("parsed_ticket_content") to get the pre-extracted meaning instead of re-parsing the raw description themselves
 
 
 # ==================== HELPER FUNCTIONS ====================

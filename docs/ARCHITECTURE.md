@@ -382,7 +382,7 @@ global.integration_configs            # External system configs
 curl -X POST http://[control_plane_url]/api/v1/execute/ingestion_agent.batch_ticket_from_servicenow \
   -H "Content-Type: application/json" \
   -d '{
-    "input": {
+    "arguments": {
       "ticket": {
         "number": "SCTASK0802841",
         "short_description": "VPN Access Required",
