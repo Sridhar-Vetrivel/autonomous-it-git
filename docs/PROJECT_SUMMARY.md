@@ -200,8 +200,8 @@ Expected response:
 
 | Phase | Agent | Type | Input | Output | Decision Gate |
 |-------|-------|------|-------|--------|---------------|
-| 1 | **Ingestion** | Skills | ServiceNow JSON | NormalizedTicket | - |
-| 2 | **Classification** | Reasoner | Ticket | Category + Priority | confidence < 0.7? |
+| 1 | **Ingestion** | Skills + Reasoner | ServiceNow JSON | NormalizedTicket + parsed_ticket_content | - |
+| 2 | **Classification** | Reasoner | current_ticket | ClassificationResult | confidence < threshold? |
 | 3 | **Enrichment** | Skills+Reasoner | Classification | Context + History | - |
 | 4 | **Decision & Planning** | Reasoner | Enriched | ResolutionPlan | high_risk? |
 | 5 | **Execution** | Skills | Plan | ExecutionLog | success? |

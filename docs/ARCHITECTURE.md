@@ -65,68 +65,90 @@ The **Autonomous IT Service Management Agent** is an end-to-end ticket resolutio
 ## 2. Nine-Agent Workflow Pipeline
 
 ### Phase 1: Ingestion Agent
-**Purpose**: Parse incoming ServiceNow tickets and normalize data
+**Purpose**: Parse incoming ServiceNow tickets, extract structured meaning via LLM, normalize, and store.
 
-**Type**: Primarily Skills-based
-- **Skills**:
-  - `batch_ticket_from_servicenow()`: Parse ticket JSON from ServiceNow CURL trigger
-  - `normalize_ticket_fields()`: Map and validate ServiceNow fields to internal schema
-  - `extract_attachments()`: Extract ticket metadata (attachments, related items)
-  - `store_to_memory()`: Persist ticket in session/agent memory
+**Type**: Skills + Reasoner
+
+**Skills**:
+  - `batch_ticket_from_servicenow()`: Parse and validate raw ServiceNow JSON
+  - `normalize_ticket_fields()`: Map ServiceNow fields to `NormalizedTicket` schema; derives priority, urgency, impact, and service_type
+  - `extract_attachments()`: Extract attachment metadata from the ticket
+  - `store_to_memory()`: Persist normalized ticket in session memory
+  - `process_incoming_ticket()`: Orchestrator skill — runs the full 5-step ingestion pipeline and hands off to Classification Agent
 
 **Reasoners**:
-- `parse_ticket_content()`: Handle malformed tickets, validate required fields
+- `parse_ticket_content()`: LLM-based semantic extraction. Uses the configured AI model (via OpenRouter) to extract structured meaning from free-text ticket fields. Returns: `symptoms`, `affected_systems`, `urgency_cues`, `user_intent`, `summary`. Result is stored as `parsed_ticket_content` for use by downstream agents.
 
-**Output**: Normalized ticket object stored in `session.current_ticket`
+**Pipeline (5 steps)**:
+1. Parse ServiceNow payload → `TicketData`
+2. LLM semantic extraction via `parse_ticket_content` reasoner → stored as `parsed_ticket_content`
+3. Normalize fields → `NormalizedTicket`
+4. Extract attachments
+5. Store normalized ticket and parsed content to memory → hand off to Classification Agent
+
+**Output**: Normalized ticket stored as `current_ticket`; LLM-extracted meaning stored as `parsed_ticket_content`
 
 **Key Functions**:
 ```python
 @app.skill()
 async def batch_ticket_from_servicenow(arguments) -> TicketData:
-    """Extract ticket JSON from ServiceNow payload"""
-    
+    """Parse and validate raw ServiceNow payload"""
+
 @app.skill()
 async def normalize_ticket_fields(arguments) -> NormalizedTicket:
     """Map ServiceNow fields to internal schema"""
-    
+
 @app.reasoner()
-async def parse_ticket_content(arguments) -> TicketValidationResult:
-    """Use AI to handle edge cases and validation"""
+async def parse_ticket_content(arguments) -> dict:
+    """LLM semantic extraction: symptoms, affected_systems, urgency_cues, user_intent, summary"""
+
+@app.skill()
+async def process_incoming_ticket(ticket_payload) -> dict:
+    """Orchestrator: runs full 5-step pipeline, then calls classification_agent.classify_ticket_type"""
 ```
 
+**Decorators**: `@handle_errors`, `@track_performance` (from `shared.decorators`)
+
 **Memory State**:
-- `session.current_ticket`: Raw ticket data
-- `session.ticket_history`: List of processed tickets
+- `current_ticket`: Normalized ticket data
+- `ticket_history`: List of processed ticket IDs
+- `parsed_ticket_content`: LLM-extracted structured meaning (available to Classification, Enrichment, and Decision agents)
 
 ---
 
 ### Phase 2: Classification Agent
-**Purpose**: Categorize tickets by type and assess initial priority/complexity
+**Purpose**: Categorize tickets by type, category, priority, and severity using AI reasoning.
 
 **Type**: Reasoner-driven (non-deterministic)
-- **Reasoners**:
-  - `classify_ticket_type()`: Determine ticket category (incident, request, change, etc.)
-  - `assess_priority_and_severity()`: Evaluate urgency and impact
-  - `escalate_to_human_review()`: Route low-confidence classifications to human
+
+**Reasoners**:
+  - `classify_ticket_type()`: Single AI-driven reasoner that handles classification, priority/severity assessment, and escalation routing in one call. Uses structured output against `ClassificationResult` schema. Decorated with `@handle_errors` and `@track_slow_operation` (warn at 8s, critical at 20s).
 
 **Pydantic Schema**:
 ```python
-class TicketClassification(BaseModel):
-    ticket_type: str  # incident, request, change, problem
-    priority: str     # critical, high, medium, low
-    severity: str     # 1, 2, 3, 4
-    confidence: float # 0.0 - 1.0
-    reasoning: str
+class ClassificationResult(BaseModel):
+    ticket_id: str
+    ticket_type: str       # incident, request, change, problem
+    category: str          # vpn_access, software_install, hardware_request, access_management, network_issue, other
+    sub_category: Optional[str]
+    priority: str          # critical, high, medium, low
+    severity: str          # 1, 2, 3, 4
+    confidence_score: float  # 0.0 - 1.0
+    reasoning: str         # max 1000 chars
     requires_human_review: bool
+    suggested_assignment_group: Optional[str]
+    tags: List[str]
 ```
 
 **Decision Logic**:
-- If confidence < 0.7 → trigger `Human Review` step
-- Else → proceed to Enrichment Agent
+- If `confidence_score` < `Config.CLASSIFICATION_CONFIDENCE_THRESHOLD` (default 0.7) → set `requires_human_review=True`, store `human_review_reason`, call `human_review_agent.queue_for_review` with `stage="classification"`
+- Else → call `enrichment_agent.enrich_ticket`
 
 **Memory State**:
-- `session.classification_result`: Classification object
-- `agent.classification_patterns`: Learned patterns per category
+- `current_ticket`: Read from memory (set by Ingestion Agent)
+- `classification_result`: Full `ClassificationResult` dict
+- `human_review_reason`: Reason string (set only when escalating)
+- `requires_human_review`: Boolean flag (set only when escalating)
 
 ---
 
@@ -346,9 +368,14 @@ LEARNING
 ### Critical Memory Keys
 
 ```python
-# Session scope - ticket-specific
-session.current_ticket                 # Raw ticket data
-session.classification_result          # Classification output
+# Session scope - ticket-specific (stored without "session." prefix in memory calls)
+current_ticket                         # Normalized ticket (set by Ingestion Agent)
+parsed_ticket_content                  # LLM-extracted meaning: symptoms, affected_systems,
+                                       #   urgency_cues, user_intent, summary (set by Ingestion)
+ticket_history                         # List of processed ticket IDs (set by Ingestion)
+classification_result                  # ClassificationResult dict (set by Classification)
+human_review_reason                    # Reason for escalation, if any (set by Classification)
+requires_human_review                  # Boolean flag, if escalating (set by Classification)
 session.enriched_ticket               # Enriched context
 session.resolution_plan               # Execution plan
 session.validation_result             # Validation outcome
@@ -465,9 +492,15 @@ Execution Failure
 
 ## 7. Deployment Architecture
 
+### Startup (main.py)
+All 9 agents are started sequentially in background daemon threads by `main.py`:
+- `find_free_port(start=8001)` scans ports 8001–8999 and returns the first unoccupied port, so there are no collisions even if common ports are taken.
+- Each agent is started one at a time (`start_agent_in_thread`) with a 1-second wait between startups to allow port binding before the next agent scans.
+- After all agents are up, `process_incoming_ticket` is called directly via `asyncio.run()` to trigger the ingestion pipeline.
+
 ### Components
 1. **AgentField Control Plane**: Central orchestration
-2. **Agent Runtime Nodes**: Execution environments (9 agents)
+2. **Agent Runtime Nodes**: Execution environments (9 agents, dynamic ports 8001–8999)
 3. **Memory Fabric**: Persistent state and embeddings
 4. **ServiceNow Instance**: Ticket source and destination
 5. **Knowledge Base**: Vector store and resolution database
