@@ -36,9 +36,9 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[PLANNING] *** PHASE 4: DECISION & PLANNING ***")
     print(f"[PLANNING] Generating resolution plan for ticket: {ticket_id}")
-    ticket = await app.memory.get("session", "current_ticket")
-    classification = await app.memory.get("session", "classification_result")
-    enrichment = await app.memory.get("session", "enriched_ticket")
+    ticket = await app.memory.get("current_ticket")
+    classification = await app.memory.get("classification_result")
+    enrichment = await app.memory.get("enriched_ticket")
 
     if not ticket or not classification:
         print(f"[PLANNING] ERROR: Missing context for ticket {ticket_id} (ticket={bool(ticket)}, classification={bool(classification)})")
@@ -76,8 +76,8 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
     for i, step in enumerate(response.steps):
         print(f"[PLANNING]   Step {i+1}: {step.action} (skill={step.skill_or_tool}, ~{step.expected_duration_minutes}min)")
 
-    await app.memory.set("session", "resolution_plan", plan_dict)
-    await app.memory.set("session", "decision_reasoning", plan_dict.get("risk_description", ""))
+    await app.memory.set("resolution_plan", plan_dict)
+    await app.memory.set("decision_reasoning", plan_dict.get("risk_description", ""))
 
     # Escalate if high risk or requires approval
     if (
@@ -87,22 +87,18 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
         print(f"[PLANNING] Risk level '{response.risk_level}' or approval required — escalating to human_review_agent")
         print(f"[PLANNING] Justification: {response.approval_justification or 'High-risk plan'}")
         print(f"{'='*60}\n")
-        await app.memory.set("session", "requires_human_review", True)
-        await app.memory.set(
-            "run",
-            "approvals_required",
-            [response.approval_justification or "High-risk plan requires approval"],
-        )
+        await app.memory.set("requires_human_review", True)
+        await app.memory.set("approvals_required", [response.approval_justification or "High-risk plan requires approval"])
         await app.call(
             "human_review_agent.queue_for_review",
-            input={"ticket_id": ticket_id, "stage": "planning"},
+            arguments={"ticket_id": ticket_id, "stage": "planning"},
         )
     else:
         print(f"[PLANNING] Risk OK (level={response.risk_level}) — handing off to execution_agent")
         print(f"{'='*60}\n")
         await app.call(
             "execution_agent.execute_plan",
-            input={"ticket_id": ticket_id},
+            arguments={"ticket_id": ticket_id},
         )
 
     return plan_dict

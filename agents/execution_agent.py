@@ -39,7 +39,7 @@ async def execute_plan(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[EXECUTION] *** PHASE 5: PLAN EXECUTION ***")
     print(f"[EXECUTION] Executing plan for ticket: {ticket_id}")
-    plan_raw = await app.memory.get("session", "resolution_plan")
+    plan_raw = await app.memory.get("resolution_plan")
 
     if not plan_raw:
         print(f"[EXECUTION] ERROR: No resolution plan found for ticket {ticket_id}")
@@ -81,8 +81,8 @@ async def execute_plan(arguments: Dict) -> Dict:
     )
 
     log_dict = log.model_dump(mode="json")
-    await app.memory.set("run", "execution_log", log_dict)
-    await app.memory.set("run", "step_results", [s.model_dump(mode="json") for s in step_results])
+    await app.memory.set("execution_log", log_dict)
+    await app.memory.set("step_results", [s.model_dump(mode="json") for s in step_results])
 
     passed = sum(1 for s in step_results if s.status == "success")
     failed = sum(1 for s in step_results if s.status == "failure")
@@ -93,7 +93,7 @@ async def execute_plan(arguments: Dict) -> Dict:
     # Forward to Validation
     await app.call(
         "validation_agent.validate_resolution",
-        input={"ticket_id": ticket_id, "execution_id": execution_id},
+        arguments={"ticket_id": ticket_id, "execution_id": execution_id},
     )
 
     return log_dict
@@ -125,9 +125,9 @@ async def log_execution_skipped(arguments: Dict) -> Dict:
     """Record a step that was intentionally skipped."""
     step_id = arguments.get("step_id")
     reason = arguments.get("reason", "skip_on_error flag set")
-    errors: List[Dict] = await app.memory.get("run", "errors") or []
+    errors: List[Dict] = await app.memory.get("errors") or []
     errors.append({"step_id": step_id, "skipped": True, "reason": reason})
-    await app.memory.set("run", "errors", errors)
+    await app.memory.set("errors", errors)
     return {"step_id": step_id, "skipped": True}
 
 

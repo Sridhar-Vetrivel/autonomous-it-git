@@ -36,8 +36,8 @@ async def enrich_ticket(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[ENRICHMENT] *** PHASE 3: TICKET ENRICHMENT ***")
     print(f"[ENRICHMENT] Enriching ticket: {ticket_id}")
-    ticket = await app.memory.get("session", "current_ticket")
-    classification = await app.memory.get("session", "classification_result")
+    ticket = await app.memory.get("current_ticket")
+    classification = await app.memory.get("classification_result")
 
     if not ticket:
         print(f"[ENRICHMENT] ERROR: Ticket {ticket_id} not found in session memory")
@@ -80,9 +80,9 @@ async def enrich_ticket(arguments: Dict) -> Dict:
         }
     )
 
-    await app.memory.set("session", "enriched_ticket", enriched)
-    await app.memory.set("session", "user_context", user_profile_dict)
-    await app.memory.set("session", "related_tickets", related_tickets)
+    await app.memory.set("enriched_ticket", enriched)
+    await app.memory.set("user_context", user_profile_dict)
+    await app.memory.set("related_tickets", related_tickets)
     print(f"[ENRICHMENT] Enrichment stored. Complexity: {enriched.get('estimated_resolution_complexity', 'unknown')}")
     print(f"[ENRICHMENT] Handing off to decision_planning_agent for ticket {ticket_id}")
     print(f"{'='*60}\n")
@@ -90,7 +90,7 @@ async def enrich_ticket(arguments: Dict) -> Dict:
     # Hand off to Decision & Planning
     await app.call(
         "decision_planning_agent.generate_resolution_plan",
-        input={"ticket_id": ticket_id},
+        arguments={"ticket_id": ticket_id},
     )
 
     return enriched
@@ -166,7 +166,7 @@ async def fetch_related_incidents(arguments: Dict) -> List[Dict]:
     category = arguments.get("category", "")
 
     # Search global vector store for similar resolutions
-    current_ticket = await app.memory.get("session", "current_ticket") or {}
+    current_ticket = await app.memory.get("current_ticket") or {}
     query_text = f"{current_ticket.get('title', '')} {current_ticket.get('description', '')}"
 
     try:

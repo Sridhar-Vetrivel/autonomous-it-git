@@ -35,7 +35,7 @@ async def classify_ticket_type(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[CLASSIFICATION] *** PHASE 2: TICKET CLASSIFICATION ***")
     print(f"[CLASSIFICATION] Classifying ticket: {ticket_id}")
-    ticket = await app.memory.get("session", "current_ticket")
+    ticket = await app.memory.get("current_ticket")
 
     if not ticket:
         print(f"[CLASSIFICATION] ERROR: Ticket {ticket_id} not found in session memory")
@@ -76,30 +76,26 @@ async def classify_ticket_type(arguments: Dict) -> Dict:
     if response.confidence_score < Config.CLASSIFICATION_CONFIDENCE_THRESHOLD:
         result_dict["requires_human_review"] = True
         print(f"[CLASSIFICATION] Confidence {response.confidence_score:.2f} below threshold {Config.CLASSIFICATION_CONFIDENCE_THRESHOLD} — flagging for human review")
-        await app.memory.set(
-            "session",
-            "human_review_reason",
-            f"Low classification confidence: {response.confidence_score:.2f}",
-        )
-        await app.memory.set("session", "requires_human_review", True)
+        await app.memory.set("human_review_reason", f"Low classification confidence: {response.confidence_score:.2f}")
+        await app.memory.set("requires_human_review", True)
     else:
         print(f"[CLASSIFICATION] Confidence OK ({response.confidence_score:.2f} >= {Config.CLASSIFICATION_CONFIDENCE_THRESHOLD})")
 
-    await app.memory.set("session", "classification_result", result_dict)
+    await app.memory.set("classification_result", result_dict)
 
     if result_dict["requires_human_review"]:
         print(f"[CLASSIFICATION] Escalating to human_review_agent (stage=classification)")
         print(f"{'='*60}\n")
         await app.call(
             "human_review_agent.queue_for_review",
-            input={"ticket_id": ticket_id, "stage": "classification"},
+            arguments={"ticket_id": ticket_id, "stage": "classification"},
         )
     else:
         print(f"[CLASSIFICATION] Handing off to enrichment_agent for ticket {ticket_id}")
         print(f"{'='*60}\n")
         await app.call(
             "enrichment_agent.enrich_ticket",
-            input={"ticket_id": ticket_id},
+            arguments={"ticket_id": ticket_id},
         )
 
     return result_dict
@@ -113,8 +109,8 @@ async def assess_priority_and_severity(arguments: Dict) -> Dict:
     Re-evaluate priority and severity when flagged by another agent.
     """
     ticket_id = arguments.get("ticket_id")
-    ticket = await app.memory.get("session", "current_ticket")
-    classification = await app.memory.get("session", "classification_result") or {}
+    ticket = await app.memory.get("current_ticket")
+    classification = await app.memory.get("classification_result") or {}
 
     response = await app.ai(
         system=(
@@ -130,7 +126,7 @@ async def assess_priority_and_severity(arguments: Dict) -> Dict:
     )
 
     classification.update(response)
-    await app.memory.set("session", "classification_result", classification)
+    await app.memory.set("classification_result", classification)
     return classification
 
 
@@ -143,7 +139,7 @@ async def escalate_to_human_review(arguments: Dict) -> Dict:
     ticket_id = arguments.get("ticket_id")
     reason = arguments.get("reason", "Low confidence classification")
 
-    await app.memory.set("session", "requires_human_review", True)
-    await app.memory.set("session", "human_review_reason", reason)
+    await app.memory.set("requires_human_review", True)
+    await app.memory.set("human_review_reason", reason)
 
     return {"ticket_id": ticket_id, "escalated": True, "reason": reason}

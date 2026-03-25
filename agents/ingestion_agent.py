@@ -247,7 +247,7 @@ async def process_incoming_ticket(ticket_payload: Dict) -> Dict:
         print(f"{'='*60}\n")
         await app.call(
             "classification_agent.classify_ticket_type",
-            input={"ticket_id": ticket_data["number"]},
+            arguments={"ticket_id": ticket_data["number"]},
         )
 
         return {

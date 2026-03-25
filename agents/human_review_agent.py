@@ -45,10 +45,10 @@ async def queue_for_review(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[HUMAN_REVIEW] *** PHASE 9: HUMAN REVIEW ESCALATION ***")
     print(f"[HUMAN_REVIEW] Queuing ticket {ticket_id} for human review (stage={stage})")
-    reason = await app.memory.get("session", "human_review_reason") or "Escalated by agent"
-    ticket = await app.memory.get("session", "current_ticket") or {}
-    classification = await app.memory.get("session", "classification_result") or {}
-    plan = await app.memory.get("session", "resolution_plan") or {}
+    reason = await app.memory.get("human_review_reason") or "Escalated by agent"
+    ticket = await app.memory.get("current_ticket") or {}
+    classification = await app.memory.get("classification_result") or {}
+    plan = await app.memory.get("resolution_plan") or {}
 
     review_item = {
         "ticket_id": ticket_id,
@@ -62,10 +62,10 @@ async def queue_for_review(arguments: Dict) -> Dict:
     }
 
     # Persist in memory so it can be retrieved by the review UI
-    queue: list = await app.memory.get("agent", "human_review_queue") or []
+    queue: list = await app.memory.get("human_review_queue") or []
     queue.append(review_item)
-    await app.memory.set("agent", "human_review_queue", queue)
-    await app.memory.set("session", "human_review_item", review_item)
+    await app.memory.set("human_review_queue", queue)
+    await app.memory.set("human_review_item", review_item)
 
     print(f"[HUMAN_REVIEW] Review item queued: reason='{reason}', resume_skill='{review_item.get('resume_skill')}'")
     print(f"[HUMAN_REVIEW] Queue size: {len(queue)}")
@@ -110,17 +110,17 @@ async def record_human_decision(arguments: Dict) -> Dict:
     if override_data:
         print(f"[HUMAN_REVIEW] Override data provided: keys={list(override_data.keys())}")
 
-    await app.memory.set("session", "human_decision", decision)
-    await app.memory.set("session", "human_review_comments", comments)
-    await app.memory.set("session", "requires_human_review", False)
+    await app.memory.set("human_decision", decision)
+    await app.memory.set("human_review_comments", comments)
+    await app.memory.set("requires_human_review", False)
 
     if override_data:
         # Merge override into the relevant memory key
-        stage = (await app.memory.get("session", "human_review_item") or {}).get("stage", "")
+        stage = (await app.memory.get("human_review_item") or {}).get("stage", "")
         if stage == "classification" and "classification_result" in override_data:
-            await app.memory.set("session", "classification_result", override_data["classification_result"])
+            await app.memory.set("classification_result", override_data["classification_result"])
         elif stage == "planning" and "resolution_plan" in override_data:
-            await app.memory.set("session", "resolution_plan", override_data["resolution_plan"])
+            await app.memory.set("resolution_plan", override_data["resolution_plan"])
 
     result = {
         "ticket_id": ticket_id,
@@ -130,18 +130,18 @@ async def record_human_decision(arguments: Dict) -> Dict:
     }
 
     if decision in ("approve", "override"):
-        review_item = await app.memory.get("session", "human_review_item") or {}
+        review_item = await app.memory.get("human_review_item") or {}
         resume_skill = review_item.get("resume_skill", "")
         if resume_skill:
             print(f"[HUMAN_REVIEW] Resuming pipeline: calling {resume_skill} for ticket {ticket_id}")
-            await app.call(resume_skill, input={"ticket_id": ticket_id})
+            await app.call(resume_skill, arguments={"ticket_id": ticket_id})
             result["resumed"] = True
         else:
             print(f"[HUMAN_REVIEW] No resume_skill found — pipeline cannot continue automatically")
     else:
         # Rejected — close without resolution
         print(f"[HUMAN_REVIEW] Ticket {ticket_id} REJECTED by human — setting final_status=rejected_by_human")
-        await app.memory.set("session", "final_status", "rejected_by_human")
+        await app.memory.set("final_status", "rejected_by_human")
 
     return result
 
@@ -149,7 +149,7 @@ async def record_human_decision(arguments: Dict) -> Dict:
 @app.skill()
 async def get_pending_reviews(arguments: Dict) -> list:
     """Return all tickets currently waiting for human review."""
-    return await app.memory.get("agent", "human_review_queue") or []
+    return await app.memory.get("human_review_queue") or []
 
 
 # ── Reasoners ─────────────────────────────────────────────────────────────────
@@ -162,10 +162,10 @@ async def summarize_for_reviewer(arguments: Dict) -> Dict:
     Generate a concise summary to help the analyst make a fast, informed decision.
     """
     ticket_id = arguments.get("ticket_id")
-    ticket = await app.memory.get("session", "current_ticket") or {}
-    classification = await app.memory.get("session", "classification_result") or {}
-    plan = await app.memory.get("session", "resolution_plan") or {}
-    reason = await app.memory.get("session", "human_review_reason") or ""
+    ticket = await app.memory.get("current_ticket") or {}
+    classification = await app.memory.get("classification_result") or {}
+    plan = await app.memory.get("resolution_plan") or {}
+    reason = await app.memory.get("human_review_reason") or ""
 
     response = await app.ai(
         system=(

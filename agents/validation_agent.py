@@ -37,9 +37,9 @@ async def validate_resolution(arguments: Dict) -> Dict:
     print(f"[VALIDATION] *** PHASE 6: VALIDATION & CLOSURE ***")
     print(f"[VALIDATION] Validating resolution for ticket: {ticket_id}, execution: {execution_id}")
 
-    execution_log = await app.memory.get("run", "execution_log") or {}
-    plan = await app.memory.get("session", "resolution_plan") or {}
-    ticket = await app.memory.get("session", "current_ticket") or {}
+    execution_log = await app.memory.get("execution_log") or {}
+    plan = await app.memory.get("resolution_plan") or {}
+    ticket = await app.memory.get("current_ticket") or {}
 
     print(f"[VALIDATION] Execution status: {execution_log.get('overall_status', 'unknown')}, rollback={execution_log.get('rollback_performed', False)}")
     print(f"[VALIDATION] Running health checks...")
@@ -81,7 +81,7 @@ async def validate_resolution(arguments: Dict) -> Dict:
     )
 
     result_dict = result.model_dump(mode="json")
-    await app.memory.set("session", "validation_result", result_dict)
+    await app.memory.set("validation_result", result_dict)
 
     print(f"[VALIDATION] AI assessment: success={ai_assessment.get('success')}, confidence={ai_assessment.get('confidence', 0):.2f}")
     print(f"[VALIDATION] Overall result: all_checks_passed={all_passed}, recommended_action={recommended}")
@@ -90,14 +90,14 @@ async def validate_resolution(arguments: Dict) -> Dict:
         print(f"[VALIDATION] Validation PASSED — closing ticket in ServiceNow and notifying stakeholders")
         print(f"{'='*60}\n")
         await close_ticket_in_servicenow({"ticket_id": ticket_id, "resolution_notes": ai_assessment.get("reasoning", "")})
-        await app.call("communication_agent.notify_stakeholders", input={"ticket_id": ticket_id})
+        await app.call("communication_agent.notify_stakeholders", arguments={"ticket_id": ticket_id})
     else:
         print(f"[VALIDATION] Validation FAILED — escalating to human_review_agent (stage=validation)")
         print(f"{'='*60}\n")
-        await app.memory.set("session", "requires_human_review", True)
+        await app.memory.set("requires_human_review", True)
         await app.call(
             "human_review_agent.queue_for_review",
-            input={"ticket_id": ticket_id, "stage": "validation"},
+            arguments={"ticket_id": ticket_id, "stage": "validation"},
         )
 
     return result_dict
@@ -175,7 +175,7 @@ async def request_user_confirmation(arguments: Dict) -> Dict:
     ticket_id = arguments["ticket_id"]
     requester_email = arguments.get("requester_email", "")
 
-    await app.memory.set("session", "awaiting_user_confirmation", True)
+    await app.memory.set("awaiting_user_confirmation", True)
 
     return {
         "ticket_id": ticket_id,

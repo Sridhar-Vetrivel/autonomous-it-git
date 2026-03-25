@@ -34,9 +34,9 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
     print(f"\n{'='*60}")
     print(f"[COMMUNICATION] *** PHASE 7: STAKEHOLDER NOTIFICATIONS ***")
     print(f"[COMMUNICATION] Notifying stakeholders for ticket: {ticket_id}")
-    ticket = await app.memory.get("session", "current_ticket") or {}
-    validation = await app.memory.get("session", "validation_result") or {}
-    execution_log = await app.memory.get("run", "execution_log") or {}
+    ticket = await app.memory.get("current_ticket") or {}
+    validation = await app.memory.get("validation_result") or {}
+    execution_log = await app.memory.get("execution_log") or {}
 
     print(f"[COMMUNICATION] Composing resolution message via AI...")
     message = await compose_resolution_message(
@@ -68,7 +68,7 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
     )
     team_task = send_team_notification(
         {
-            "team": (await app.memory.get("session", "enriched_ticket") or {}).get("service_owner_team", "IT Support"),
+            "team": (await app.memory.get("enriched_ticket") or {}).get("service_owner_team", "IT Support"),
             "ticket_id": ticket_id,
             "summary": message[:500],
         }
@@ -86,7 +86,7 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
         "message_preview": message[:200],
     }
 
-    await app.memory.set("session", "communications_sent", sent_record)
+    await app.memory.set("communications_sent", sent_record)
     print(f"[COMMUNICATION] Email sent: {requester_result}")
     print(f"[COMMUNICATION] ServiceNow updated: {sn_result}")
     print(f"[COMMUNICATION] Team notification: {team_result}")
@@ -94,7 +94,7 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
     print(f"{'='*60}\n")
 
     # Trigger Learning Agent
-    await app.call("learning_agent.learn_from_resolution", input={"ticket_id": ticket_id})
+    await app.call("learning_agent.learn_from_resolution", arguments={"ticket_id": ticket_id})
 
     return sent_record
 
@@ -129,9 +129,9 @@ async def send_email_notification(arguments: Dict) -> Dict:
 
     # In production integrate with your email service (SendGrid, SES, etc.)
     # For now, log to agent memory as a notification record.
-    templates: list = await app.memory.get("agent", "notification_templates") or []
+    templates: list = await app.memory.get("notification_templates") or []
     templates.append({"recipient": recipient, "subject": subject, "preview": body[:200]})
-    await app.memory.set("agent", "notification_templates", templates)
+    await app.memory.set("notification_templates", templates)
 
     return {"sent": True, "recipient": recipient, "subject": subject}
 

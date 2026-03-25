@@ -35,12 +35,12 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
     print(f"[LEARNING] *** PHASE 8: LEARNING & KNOWLEDGE EXTRACTION ***")
     print(f"[LEARNING] Learning from resolution for ticket: {ticket_id}")
 
-    ticket = await app.memory.get("session", "current_ticket") or {}
-    classification = await app.memory.get("session", "classification_result") or {}
-    enrichment = await app.memory.get("session", "enriched_ticket") or {}
-    plan = await app.memory.get("session", "resolution_plan") or {}
-    execution_log = await app.memory.get("run", "execution_log") or {}
-    validation = await app.memory.get("session", "validation_result") or {}
+    ticket = await app.memory.get("current_ticket") or {}
+    classification = await app.memory.get("classification_result") or {}
+    enrichment = await app.memory.get("enriched_ticket") or {}
+    plan = await app.memory.get("resolution_plan") or {}
+    execution_log = await app.memory.get("execution_log") or {}
+    validation = await app.memory.get("validation_result") or {}
 
     context = {
         "ticket": ticket,
@@ -59,12 +59,12 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
     improvements = await recommend_prompt_improvements(context)
 
     # Persist learned patterns per category
-    existing: dict = await app.memory.get("agent", "learned_patterns") or {}
+    existing: dict = await app.memory.get("learned_patterns") or {}
     category = classification.get("category", "general")
     cat_patterns: list = existing.get(category, [])
     cat_patterns.append(patterns)
     existing[category] = cat_patterns[-50:]  # Keep last 50 per category
-    await app.memory.set("agent", "learned_patterns", existing)
+    await app.memory.set("learned_patterns", existing)
     print(f"[LEARNING] Pattern stored for category '{category}' (total patterns in category: {len(existing[category])})")
 
     # Store vector embedding for future similarity search
@@ -88,10 +88,10 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
     print(f"[LEARNING] Vector embedding stored for ticket {ticket_id} (status={'success' if success else 'failed'}, resolution_time={round(resolution_time, 1)}min)")
 
     # Store prompt improvement suggestions
-    prompt_improvements: list = await app.memory.get("agent", "prompt_improvements") or []
+    prompt_improvements: list = await app.memory.get("prompt_improvements") or []
     prompt_improvements.append(improvements)
     prompt_improvements = prompt_improvements[-20:]
-    await app.memory.set("agent", "prompt_improvements", prompt_improvements)
+    await app.memory.set("prompt_improvements", prompt_improvements)
     print(f"[LEARNING] Prompt improvement suggestion stored (total suggestions: {len(prompt_improvements)})")
     print(f"[LEARNING] Pipeline complete for ticket {ticket_id}")
     print(f"{'='*60}\n")
