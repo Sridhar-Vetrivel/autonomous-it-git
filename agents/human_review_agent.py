@@ -12,6 +12,7 @@ import aiohttp
 
 from agentfield import Agent, AIConfig
 from config import Config
+from shared.decorators import handle_errors, track_slow_operation
 
 app = Agent(
     node_id="human_review_agent",
@@ -31,6 +32,7 @@ _RESUME_MAP = {
 # ── Skills ────────────────────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("queue_for_review")
 async def queue_for_review(arguments: Dict) -> Dict:
     """
     Push a ticket into the human review queue and mark the session as pending.
@@ -40,6 +42,9 @@ async def queue_for_review(arguments: Dict) -> Dict:
     """
     ticket_id = arguments["ticket_id"]
     stage = arguments.get("stage", "unknown")
+    print(f"\n{'='*60}")
+    print(f"[HUMAN_REVIEW] *** PHASE 9: HUMAN REVIEW ESCALATION ***")
+    print(f"[HUMAN_REVIEW] Queuing ticket {ticket_id} for human review (stage={stage})")
     reason = await app.memory.get("session", "human_review_reason") or "Escalated by agent"
     ticket = await app.memory.get("session", "current_ticket") or {}
     classification = await app.memory.get("session", "classification_result") or {}
@@ -62,6 +67,9 @@ async def queue_for_review(arguments: Dict) -> Dict:
     await app.memory.set("agent", "human_review_queue", queue)
     await app.memory.set("session", "human_review_item", review_item)
 
+    print(f"[HUMAN_REVIEW] Review item queued: reason='{reason}', resume_skill='{review_item.get('resume_skill')}'")
+    print(f"[HUMAN_REVIEW] Queue size: {len(queue)}")
+
     # POST to the human review queue endpoint if configured
     if Config.HUMAN_REVIEW_QUEUE_URL:
         try:
@@ -73,11 +81,16 @@ async def queue_for_review(arguments: Dict) -> Dict:
                 )
         except Exception:
             pass  # Do not block the pipeline on notification failure
+    else:
+        print(f"[HUMAN_REVIEW] No HUMAN_REVIEW_QUEUE_URL configured — item stored in memory only")
 
+    print(f"[HUMAN_REVIEW] Awaiting human decision for ticket {ticket_id}...")
+    print(f"{'='*60}\n")
     return {"queued": True, "ticket_id": ticket_id, "stage": stage}
 
 
 @app.skill()
+@handle_errors("record_human_decision")
 async def record_human_decision(arguments: Dict) -> Dict:
     """
     Called by the review UI (via webhook) once the analyst has made a decision.
@@ -93,6 +106,9 @@ async def record_human_decision(arguments: Dict) -> Dict:
     decision = arguments["decision"]
     comments = arguments.get("comments", "")
     override_data = arguments.get("override_data", {})
+    print(f"\n[HUMAN_REVIEW] Decision received for ticket {ticket_id}: decision={decision}, comments='{comments[:100]}'")
+    if override_data:
+        print(f"[HUMAN_REVIEW] Override data provided: keys={list(override_data.keys())}")
 
     await app.memory.set("session", "human_decision", decision)
     await app.memory.set("session", "human_review_comments", comments)
@@ -117,10 +133,14 @@ async def record_human_decision(arguments: Dict) -> Dict:
         review_item = await app.memory.get("session", "human_review_item") or {}
         resume_skill = review_item.get("resume_skill", "")
         if resume_skill:
+            print(f"[HUMAN_REVIEW] Resuming pipeline: calling {resume_skill} for ticket {ticket_id}")
             await app.call(resume_skill, input={"ticket_id": ticket_id})
             result["resumed"] = True
+        else:
+            print(f"[HUMAN_REVIEW] No resume_skill found — pipeline cannot continue automatically")
     else:
         # Rejected — close without resolution
+        print(f"[HUMAN_REVIEW] Ticket {ticket_id} REJECTED by human — setting final_status=rejected_by_human")
         await app.memory.set("session", "final_status", "rejected_by_human")
 
     return result
@@ -135,6 +155,8 @@ async def get_pending_reviews(arguments: Dict) -> list:
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("summarize_for_reviewer")
+@track_slow_operation("summarize_for_reviewer", warn_seconds=5.0, critical_seconds=15.0)
 async def summarize_for_reviewer(arguments: Dict) -> Dict:
     """
     Generate a concise summary to help the analyst make a fast, informed decision.

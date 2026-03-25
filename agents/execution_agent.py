@@ -14,6 +14,7 @@ from agentfield import Agent, AIConfig
 from schemas.execution import ExecutionLog, ExecutionStepResult
 from schemas.planning import ResolutionPlan
 from config import Config
+from shared.decorators import handle_errors, track_performance
 
 app = Agent(
     node_id="execution_agent",
@@ -25,6 +26,8 @@ app = Agent(
 # ── Skills ────────────────────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("execute_plan")
+@track_performance("execute_plan")
 async def execute_plan(arguments: Dict) -> Dict:
     """
     Execute every step in the resolution plan, logging results to run memory.
@@ -33,24 +36,33 @@ async def execute_plan(arguments: Dict) -> Dict:
     Output: ExecutionLog dict
     """
     ticket_id = arguments["ticket_id"]
+    print(f"\n{'='*60}")
+    print(f"[EXECUTION] *** PHASE 5: PLAN EXECUTION ***")
+    print(f"[EXECUTION] Executing plan for ticket: {ticket_id}")
     plan_raw = await app.memory.get("session", "resolution_plan")
 
     if not plan_raw:
+        print(f"[EXECUTION] ERROR: No resolution plan found for ticket {ticket_id}")
         raise ValueError(f"No resolution plan found for ticket {ticket_id}")
 
     plan = ResolutionPlan.model_validate(plan_raw)
     execution_id = f"EXEC-{uuid.uuid4().hex[:8].upper()}"
+    print(f"[EXECUTION] execution_id={execution_id}, plan_id={plan.plan_id}, steps={len(plan.steps)}")
     started_at = datetime.now(timezone.utc)
     step_results: List[ExecutionStepResult] = []
     rollback_performed = False
 
     for step in plan.steps:
+        print(f"[EXECUTION] Running step {step.step_id}: {step.action}...")
         step_result = await _run_step_with_retry(step.model_dump(), execution_id)
         step_results.append(step_result)
+        print(f"[EXECUTION] Step {step.step_id} result: status={step_result.status}, retries={step_result.retry_count}, duration={step_result.duration_seconds:.2f}s")
 
         if step_result.status == "failure" and not step.skip_on_error:
             # Attempt rollback and abort
+            print(f"[EXECUTION] Step {step.step_id} FAILED and skip_on_error=False — initiating rollback...")
             rollback_performed = await _attempt_rollback(plan_raw, step_results)
+            print(f"[EXECUTION] Rollback performed: {rollback_performed}")
             break
 
     completed_at = datetime.now(timezone.utc)
@@ -72,6 +84,12 @@ async def execute_plan(arguments: Dict) -> Dict:
     await app.memory.set("run", "execution_log", log_dict)
     await app.memory.set("run", "step_results", [s.model_dump(mode="json") for s in step_results])
 
+    passed = sum(1 for s in step_results if s.status == "success")
+    failed = sum(1 for s in step_results if s.status == "failure")
+    print(f"[EXECUTION] Completed: overall={overall}, steps_passed={passed}, steps_failed={failed}, duration={log.total_duration_seconds:.2f}s")
+    print(f"[EXECUTION] Handing off to validation_agent for ticket {ticket_id}")
+    print(f"{'='*60}\n")
+
     # Forward to Validation
     await app.call(
         "validation_agent.validate_resolution",
@@ -82,6 +100,7 @@ async def execute_plan(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors("provision_resources")
 async def provision_resources(arguments: Dict) -> Dict:
     """
     Generic resource provisioning skill (VPN, software licence, access grant, etc.).
@@ -122,6 +141,8 @@ async def _run_step_with_retry(step: Dict, execution_id: str) -> ExecutionStepRe
     retry_count = 0
 
     for attempt in range(max_attempts):
+        if attempt > 0:
+            print(f"[EXECUTION] Retrying step {step.get('step_id')} (attempt {attempt+1}/{max_attempts}, backoff={2**( attempt-1)}s)...")
         try:
             # Dispatch to the appropriate skill/tool
             output = await _dispatch_step(step)

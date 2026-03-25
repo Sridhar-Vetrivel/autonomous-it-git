@@ -12,6 +12,7 @@ from datetime import datetime
 from agentfield import Agent, AIConfig
 from schemas.ticket import TicketData, NormalizedTicket
 from config import Config
+from shared.decorators import handle_errors, track_performance
 
 app = Agent(
     node_id="ingestion_agent",
@@ -23,6 +24,7 @@ app = Agent(
 # ── Skills (deterministic) ────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("batch_ticket_from_servicenow")
 async def batch_ticket_from_servicenow(arguments: Dict) -> Dict:
     """
     Parse and validate an incoming ServiceNow ticket payload.
@@ -31,6 +33,7 @@ async def batch_ticket_from_servicenow(arguments: Dict) -> Dict:
     Output: TicketData dict
     """
     payload = arguments.get("ticket_payload", {})
+    print(f"\n[INGESTION] Received ticket payload: number={payload.get('number')}, description='{payload.get('short_description')}'")
 
     try:
         ticket = TicketData(
@@ -49,12 +52,15 @@ async def batch_ticket_from_servicenow(arguments: Dict) -> Dict:
             work_notes=payload.get("work_notes"),
             attachments=payload.get("attachments", []),
         )
+        print(f"[INGESTION] Ticket parsed: id={ticket.number}, priority={ticket.priority}, requester={ticket.requested_for}")
         return ticket.model_dump()
     except Exception as e:
+        print(f"[INGESTION] ERROR parsing ticket: {e}")
         raise ValueError(f"Failed to parse ServiceNow ticket: {e}")
 
 
 @app.skill()
+@handle_errors("normalize_ticket_fields")
 async def normalize_ticket_fields(arguments: Dict) -> Dict:
     """
     Map ServiceNow fields to the internal NormalizedTicket schema.
@@ -63,6 +69,7 @@ async def normalize_ticket_fields(arguments: Dict) -> Dict:
     Output: NormalizedTicket dict
     """
     td = arguments.get("ticket_data", {})
+    print(f"[INGESTION] Normalizing fields for ticket: {td.get('number')}")
 
     priority_map = {
         "critical": "critical",
@@ -101,6 +108,7 @@ async def normalize_ticket_fields(arguments: Dict) -> Dict:
             "work_notes": td.get("work_notes"),
         },
     )
+    print(f"[INGESTION] Normalized: ticket_id={normalized.ticket_id}, service_type={normalized.service_type}, priority={normalized.priority}, urgency={normalized.urgency}")
     return normalized.model_dump(mode="json")
 
 
@@ -117,6 +125,7 @@ async def extract_attachments(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors("store_to_memory")
 async def store_to_memory(arguments: Dict) -> Dict:
     """Persist normalized ticket in session memory."""
     ticket_id = arguments["ticket_id"]
@@ -130,6 +139,7 @@ async def store_to_memory(arguments: Dict) -> Dict:
     if ticket_id not in history:
         history.append(ticket_id)
     await app.memory.set("session", "ticket_history", history)
+    print(f"[INGESTION] Stored ticket {ticket_id} in session memory (history size: {len(history)})")
 
     return {"status": "stored", "ticket_id": ticket_id, "memory_key": "session.current_ticket"}
 
@@ -183,20 +193,30 @@ async def process_incoming_ticket(ticket_payload: Dict) -> Dict:
     """
     Main ingestion flow: parse → normalize → store → hand off to classification.
     """
+    print(f"\n{'='*60}")
+    print(f"[INGESTION] *** PHASE 1: TICKET INGESTION ***")
+    print(f"[INGESTION] Processing ticket: {ticket_payload.get('number', 'UNKNOWN')}")
     try:
         # 1. Parse
+        print(f"[INGESTION] Step 1/4: Parsing ServiceNow payload...")
         ticket_data = await batch_ticket_from_servicenow({"ticket_payload": ticket_payload})
 
         # 2. Normalize
+        print(f"[INGESTION] Step 2/4: Normalizing ticket fields...")
         normalized = await normalize_ticket_fields({"ticket_data": ticket_data})
 
         # 3. Attachments
-        await extract_attachments({"ticket_data": ticket_data})
+        print(f"[INGESTION] Step 3/4: Extracting attachments...")
+        attach_result = await extract_attachments({"ticket_data": ticket_data})
+        print(f"[INGESTION] Attachments found: {attach_result.get('attachment_count', 0)}")
 
         # 4. Store in memory
+        print(f"[INGESTION] Step 4/4: Storing to session memory...")
         await store_to_memory({"ticket_id": ticket_data["number"], "normalized_ticket": normalized})
 
         # 5. Trigger classification
+        print(f"[INGESTION] Handing off to classification_agent for ticket {ticket_data['number']}...")
+        print(f"{'='*60}\n")
         await app.call(
             "classification_agent.classify_ticket_type",
             input={"ticket_id": ticket_data["number"]},
@@ -209,6 +229,7 @@ async def process_incoming_ticket(ticket_payload: Dict) -> Dict:
             "next_step": "classification_agent",
         }
     except Exception as e:
+        print(f"[INGESTION] ERROR in pipeline: {e}")
         return {"status": "error", "error": str(e), "next_step": "error_handling"}
 
 

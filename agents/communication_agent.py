@@ -9,6 +9,7 @@ from typing import Dict
 
 from agentfield import Agent, AIConfig
 from config import Config
+from shared.decorators import handle_errors, handle_errors_silently, track_performance, track_slow_operation
 
 app = Agent(
     node_id="communication_agent",
@@ -20,6 +21,8 @@ app = Agent(
 # ── Skills ────────────────────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("notify_stakeholders")
+@track_performance("notify_stakeholders")
 async def notify_stakeholders(arguments: Dict) -> Dict:
     """
     Orchestrate all outbound communications for a resolved ticket.
@@ -28,10 +31,14 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
     Output: summary of messages sent
     """
     ticket_id = arguments["ticket_id"]
+    print(f"\n{'='*60}")
+    print(f"[COMMUNICATION] *** PHASE 7: STAKEHOLDER NOTIFICATIONS ***")
+    print(f"[COMMUNICATION] Notifying stakeholders for ticket: {ticket_id}")
     ticket = await app.memory.get("session", "current_ticket") or {}
     validation = await app.memory.get("session", "validation_result") or {}
     execution_log = await app.memory.get("run", "execution_log") or {}
 
+    print(f"[COMMUNICATION] Composing resolution message via AI...")
     message = await compose_resolution_message(
         {
             "ticket": ticket,
@@ -40,6 +47,7 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
         }
     )
 
+    print(f"[COMMUNICATION] Message composed ({len(message)} chars). Firing notifications in parallel: email + ServiceNow + team webhook...")
     # Fire all notifications concurrently
     import asyncio
 
@@ -79,6 +87,11 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
     }
 
     await app.memory.set("session", "communications_sent", sent_record)
+    print(f"[COMMUNICATION] Email sent: {requester_result}")
+    print(f"[COMMUNICATION] ServiceNow updated: {sn_result}")
+    print(f"[COMMUNICATION] Team notification: {team_result}")
+    print(f"[COMMUNICATION] Handing off to learning_agent for ticket {ticket_id}")
+    print(f"{'='*60}\n")
 
     # Trigger Learning Agent
     await app.call("learning_agent.learn_from_resolution", input={"ticket_id": ticket_id})
@@ -87,6 +100,7 @@ async def notify_stakeholders(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors("update_servicenow_ticket")
 async def update_servicenow_ticket(arguments: Dict) -> Dict:
     """Post work notes and update ticket state in ServiceNow."""
     from skills.servicenow_integration import update_ticket_status
@@ -101,13 +115,16 @@ async def update_servicenow_ticket(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors_silently("send_email_notification")
 async def send_email_notification(arguments: Dict) -> Dict:
     """Send a resolution email to the ticket requester."""
     recipient = arguments.get("recipient", "")
     subject = arguments.get("subject", "")
     body = arguments.get("body", "")
 
+    print(f"[COMMUNICATION] Sending email to: {recipient} | Subject: {subject}")
     if not recipient:
+        print(f"[COMMUNICATION] No recipient — skipping email")
         return {"sent": False, "reason": "No recipient"}
 
     # In production integrate with your email service (SendGrid, SES, etc.)
@@ -120,13 +137,16 @@ async def send_email_notification(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors_silently("send_team_notification")
 async def send_team_notification(arguments: Dict) -> Dict:
     """Alert the responsible team via webhook (Slack, Teams, etc.)."""
     team = arguments.get("team", "")
     ticket_id = arguments.get("ticket_id", "")
     summary = arguments.get("summary", "")
 
+    print(f"[COMMUNICATION] Sending team notification to: {team} (ticket={ticket_id})")
     if not Config.NOTIFICATION_WEBHOOK_URL:
+        print(f"[COMMUNICATION] No NOTIFICATION_WEBHOOK_URL configured — skipping team notification")
         return {"sent": False, "reason": "No webhook configured"}
 
     import aiohttp
@@ -147,6 +167,8 @@ async def send_team_notification(arguments: Dict) -> Dict:
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("compose_resolution_message")
+@track_slow_operation("compose_resolution_message", warn_seconds=5.0, critical_seconds=15.0)
 async def compose_resolution_message(arguments: Dict) -> str:
     """
     AI-generated resolution summary message for stakeholders.

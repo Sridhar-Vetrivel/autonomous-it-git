@@ -11,6 +11,7 @@ from typing import Dict, List
 from agentfield import Agent, AIConfig
 from schemas.enrichment import EnrichmentResult, UserProfile, RelatedTicket
 from config import Config
+from shared.decorators import handle_errors, handle_errors_silently, track_performance, track_slow_operation
 
 app = Agent(
     node_id="enrichment_agent",
@@ -22,6 +23,8 @@ app = Agent(
 # ── Skills ────────────────────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("enrich_ticket")
+@track_performance("enrich_ticket")
 async def enrich_ticket(arguments: Dict) -> Dict:
     """
     Orchestrate all enrichment sub-tasks in parallel, then synthesize results.
@@ -30,12 +33,17 @@ async def enrich_ticket(arguments: Dict) -> Dict:
     Output: EnrichmentResult dict (stored in session memory)
     """
     ticket_id = arguments["ticket_id"]
+    print(f"\n{'='*60}")
+    print(f"[ENRICHMENT] *** PHASE 3: TICKET ENRICHMENT ***")
+    print(f"[ENRICHMENT] Enriching ticket: {ticket_id}")
     ticket = await app.memory.get("session", "current_ticket")
     classification = await app.memory.get("session", "classification_result")
 
     if not ticket:
+        print(f"[ENRICHMENT] ERROR: Ticket {ticket_id} not found in session memory")
         raise ValueError(f"Ticket {ticket_id} not found in session memory")
 
+    print(f"[ENRICHMENT] Running parallel lookups: user profile, knowledge base, related incidents...")
     # Run lookups concurrently
     user_profile_task = lookup_user_profile({"email": ticket.get("requester_email", "")})
     kb_task = search_knowledge_base(
@@ -48,13 +56,19 @@ async def enrich_ticket(arguments: Dict) -> Dict:
     user_profile_dict, kb_articles, related_tickets = await asyncio.gather(
         user_profile_task, kb_task, related_task
     )
+    print(f"[ENRICHMENT] User profile: {user_profile_dict.get('display_name')} ({user_profile_dict.get('department')})")
+    print(f"[ENRICHMENT] KB articles found: {len(kb_articles)}")
+    print(f"[ENRICHMENT] Related incidents found: {len(related_tickets)}")
 
     # Determine service owner via AI
+    print(f"[ENRICHMENT] Identifying service owner via AI...")
     service_info = await identify_service_owner(
         {"classification": classification, "ticket": ticket}
     )
 
+    print(f"[ENRICHMENT] Service owner: {service_info.get('service_owner')} / {service_info.get('service_owner_team')}")
     # Summarize and store
+    print(f"[ENRICHMENT] Synthesizing enrichment context via AI...")
     enriched = await summarize_context(
         {
             "ticket": ticket,
@@ -69,6 +83,9 @@ async def enrich_ticket(arguments: Dict) -> Dict:
     await app.memory.set("session", "enriched_ticket", enriched)
     await app.memory.set("session", "user_context", user_profile_dict)
     await app.memory.set("session", "related_tickets", related_tickets)
+    print(f"[ENRICHMENT] Enrichment stored. Complexity: {enriched.get('estimated_resolution_complexity', 'unknown')}")
+    print(f"[ENRICHMENT] Handing off to decision_planning_agent for ticket {ticket_id}")
+    print(f"{'='*60}\n")
 
     # Hand off to Decision & Planning
     await app.call(
@@ -80,12 +97,14 @@ async def enrich_ticket(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors_silently("lookup_user_profile")
 async def lookup_user_profile(arguments: Dict) -> Dict:
     """
     Fetch user profile from the directory / ServiceNow user table.
     Returns a UserProfile dict (mocked or real depending on environment).
     """
     email = arguments.get("email", "")
+    print(f"[ENRICHMENT] Looking up user profile for: {email}")
 
     # In production this would call the user directory API.
     # We return a sensible default so the pipeline never blocks.
@@ -101,6 +120,8 @@ async def lookup_user_profile(arguments: Dict) -> Dict:
 
 
 @app.skill()
+@handle_errors_silently("search_knowledge_base")
+@track_slow_operation("search_knowledge_base", warn_seconds=3.0, critical_seconds=8.0)
 async def search_knowledge_base(arguments: Dict) -> List[Dict]:
     """
     Search the knowledge base for articles relevant to the ticket.
@@ -110,7 +131,9 @@ async def search_knowledge_base(arguments: Dict) -> List[Dict]:
     query = arguments.get("query", "")
     category = arguments.get("category", "")
 
+    print(f"[ENRICHMENT] Searching KB for: '{query}' (category={category})")
     if not Config.KNOWLEDGE_BASE_URL:
+        print(f"[ENRICHMENT] No KNOWLEDGE_BASE_URL configured — skipping KB search")
         # No KB configured — return empty list
         return []
 
@@ -133,6 +156,8 @@ async def search_knowledge_base(arguments: Dict) -> List[Dict]:
 
 
 @app.skill()
+@handle_errors_silently("fetch_related_incidents")
+@track_performance("fetch_related_incidents")
 async def fetch_related_incidents(arguments: Dict) -> List[Dict]:
     """
     Use vector similarity search to find previously resolved similar tickets.
@@ -170,6 +195,8 @@ async def fetch_related_incidents(arguments: Dict) -> List[Dict]:
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("summarize_context")
+@track_slow_operation("summarize_context", warn_seconds=8.0, critical_seconds=20.0)
 async def summarize_context(arguments: Dict) -> Dict:
     """
     AI synthesis: combine all gathered context into an EnrichmentResult.
@@ -206,6 +233,8 @@ async def summarize_context(arguments: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("identify_service_owner")
+@track_slow_operation("identify_service_owner", warn_seconds=5.0, critical_seconds=15.0)
 async def identify_service_owner(arguments: Dict) -> Dict:
     """
     Determine the responsible team/owner based on classification and ticket context.

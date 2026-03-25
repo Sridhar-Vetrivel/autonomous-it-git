@@ -9,6 +9,7 @@ from typing import Dict
 
 from agentfield import Agent, AIConfig
 from config import Config
+from shared.decorators import handle_errors, track_performance, track_slow_operation
 
 app = Agent(
     node_id="learning_agent",
@@ -20,6 +21,8 @@ app = Agent(
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("learn_from_resolution")
+@track_performance("learn_from_resolution")
 async def learn_from_resolution(arguments: Dict) -> Dict:
     """
     Full learning pipeline for a completed ticket.
@@ -28,6 +31,9 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
     Output: dict with pattern and embedding keys stored
     """
     ticket_id = arguments["ticket_id"]
+    print(f"\n{'='*60}")
+    print(f"[LEARNING] *** PHASE 8: LEARNING & KNOWLEDGE EXTRACTION ***")
+    print(f"[LEARNING] Learning from resolution for ticket: {ticket_id}")
 
     ticket = await app.memory.get("session", "current_ticket") or {}
     classification = await app.memory.get("session", "classification_result") or {}
@@ -45,8 +51,11 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
         "validation": validation,
     }
 
+    print(f"[LEARNING] Extracting resolution patterns via AI...")
     patterns = await extract_resolution_patterns(context)
+    print(f"[LEARNING] Generating knowledge base artifact via AI...")
     artifact = await generate_knowledge_artifact(context)
+    print(f"[LEARNING] Generating prompt improvement suggestions via AI...")
     improvements = await recommend_prompt_improvements(context)
 
     # Persist learned patterns per category
@@ -56,6 +65,7 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
     cat_patterns.append(patterns)
     existing[category] = cat_patterns[-50:]  # Keep last 50 per category
     await app.memory.set("agent", "learned_patterns", existing)
+    print(f"[LEARNING] Pattern stored for category '{category}' (total patterns in category: {len(existing[category])})")
 
     # Store vector embedding for future similarity search
     embedding_text = (
@@ -75,12 +85,16 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
             "resolution_time_hours": round(resolution_time / 60, 2),
         },
     )
+    print(f"[LEARNING] Vector embedding stored for ticket {ticket_id} (status={'success' if success else 'failed'}, resolution_time={round(resolution_time, 1)}min)")
 
     # Store prompt improvement suggestions
     prompt_improvements: list = await app.memory.get("agent", "prompt_improvements") or []
     prompt_improvements.append(improvements)
     prompt_improvements = prompt_improvements[-20:]
     await app.memory.set("agent", "prompt_improvements", prompt_improvements)
+    print(f"[LEARNING] Prompt improvement suggestion stored (total suggestions: {len(prompt_improvements)})")
+    print(f"[LEARNING] Pipeline complete for ticket {ticket_id}")
+    print(f"{'='*60}\n")
 
     return {
         "ticket_id": ticket_id,
@@ -91,6 +105,8 @@ async def learn_from_resolution(arguments: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("extract_resolution_patterns")
+@track_slow_operation("extract_resolution_patterns", warn_seconds=5.0, critical_seconds=15.0)
 async def extract_resolution_patterns(context: Dict) -> Dict:
     """
     Identify reusable patterns from a completed resolution.
@@ -114,6 +130,8 @@ async def extract_resolution_patterns(context: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("analyze_resolution_effectiveness")
+@track_slow_operation("analyze_resolution_effectiveness", warn_seconds=5.0, critical_seconds=15.0)
 async def analyze_resolution_effectiveness(arguments: Dict) -> Dict:
     """
     Evaluate the quality and efficiency of a completed resolution.
@@ -134,6 +152,8 @@ async def analyze_resolution_effectiveness(arguments: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("recommend_prompt_improvements")
+@track_slow_operation("recommend_prompt_improvements", warn_seconds=5.0, critical_seconds=15.0)
 async def recommend_prompt_improvements(context: Dict) -> Dict:
     """
     Suggest improvements to agent prompts based on resolution outcome.
@@ -155,6 +175,8 @@ async def recommend_prompt_improvements(context: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("generate_knowledge_artifact")
+@track_slow_operation("generate_knowledge_artifact", warn_seconds=5.0, critical_seconds=15.0)
 async def generate_knowledge_artifact(context: Dict) -> Dict:
     """
     Create a structured knowledge base entry from the resolution.

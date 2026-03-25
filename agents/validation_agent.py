@@ -10,6 +10,7 @@ from typing import Dict, List
 from agentfield import Agent, AIConfig
 from schemas.execution import ValidationResult
 from config import Config
+from shared.decorators import handle_errors, track_performance, track_slow_operation
 
 app = Agent(
     node_id="validation_agent",
@@ -21,6 +22,8 @@ app = Agent(
 # ── Skills ────────────────────────────────────────────────────────────────────
 
 @app.skill()
+@handle_errors("validate_resolution")
+@track_performance("validate_resolution")
 async def validate_resolution(arguments: Dict) -> Dict:
     """
     Run health checks and AI evaluation to confirm resolution success.
@@ -30,11 +33,16 @@ async def validate_resolution(arguments: Dict) -> Dict:
     """
     ticket_id = arguments["ticket_id"]
     execution_id = arguments.get("execution_id", "")
+    print(f"\n{'='*60}")
+    print(f"[VALIDATION] *** PHASE 6: VALIDATION & CLOSURE ***")
+    print(f"[VALIDATION] Validating resolution for ticket: {ticket_id}, execution: {execution_id}")
 
     execution_log = await app.memory.get("run", "execution_log") or {}
     plan = await app.memory.get("session", "resolution_plan") or {}
     ticket = await app.memory.get("session", "current_ticket") or {}
 
+    print(f"[VALIDATION] Execution status: {execution_log.get('overall_status', 'unknown')}, rollback={execution_log.get('rollback_performed', False)}")
+    print(f"[VALIDATION] Running health checks...")
     health_checks = await run_health_checks(
         {
             "ticket": ticket,
@@ -43,6 +51,11 @@ async def validate_resolution(arguments: Dict) -> Dict:
         }
     )
 
+    for check in health_checks:
+        status_str = "PASS" if check.get("passed") else "FAIL"
+        print(f"[VALIDATION] Health check '{check.get('name')}': {status_str} — {check.get('message')}")
+
+    print(f"[VALIDATION] Running AI assessment of resolution success...")
     ai_assessment = await evaluate_resolution_success(
         {
             "ticket": ticket,
@@ -70,10 +83,17 @@ async def validate_resolution(arguments: Dict) -> Dict:
     result_dict = result.model_dump(mode="json")
     await app.memory.set("session", "validation_result", result_dict)
 
+    print(f"[VALIDATION] AI assessment: success={ai_assessment.get('success')}, confidence={ai_assessment.get('confidence', 0):.2f}")
+    print(f"[VALIDATION] Overall result: all_checks_passed={all_passed}, recommended_action={recommended}")
+
     if all_passed:
+        print(f"[VALIDATION] Validation PASSED — closing ticket in ServiceNow and notifying stakeholders")
+        print(f"{'='*60}\n")
         await close_ticket_in_servicenow({"ticket_id": ticket_id, "resolution_notes": ai_assessment.get("reasoning", "")})
         await app.call("communication_agent.notify_stakeholders", input={"ticket_id": ticket_id})
     else:
+        print(f"[VALIDATION] Validation FAILED — escalating to human_review_agent (stage=validation)")
+        print(f"{'='*60}\n")
         await app.memory.set("session", "requires_human_review", True)
         await app.call(
             "human_review_agent.queue_for_review",
@@ -128,6 +148,7 @@ async def run_health_checks(arguments: Dict) -> List[Dict]:
 
 
 @app.skill()
+@handle_errors("close_ticket_in_servicenow")
 async def close_ticket_in_servicenow(arguments: Dict) -> Dict:
     """Update the ServiceNow ticket state to 'Closed'."""
     from skills.servicenow_integration import update_ticket_status
@@ -166,6 +187,8 @@ async def request_user_confirmation(arguments: Dict) -> Dict:
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("evaluate_resolution_success")
+@track_slow_operation("evaluate_resolution_success", warn_seconds=5.0, critical_seconds=15.0)
 async def evaluate_resolution_success(arguments: Dict) -> Dict:
     """
     AI assessment of whether the resolution genuinely solved the ticket.

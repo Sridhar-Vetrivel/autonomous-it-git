@@ -11,6 +11,7 @@ from typing import Dict
 from agentfield import Agent, AIConfig
 from schemas.planning import ResolutionPlan
 from config import Config
+from shared.decorators import handle_errors, track_slow_operation
 
 app = Agent(
     node_id="decision_planning_agent",
@@ -22,6 +23,8 @@ app = Agent(
 # ── Reasoners ─────────────────────────────────────────────────────────────────
 
 @app.reasoner()
+@handle_errors("generate_resolution_plan")
+@track_slow_operation("generate_resolution_plan", warn_seconds=10.0, critical_seconds=30.0)
 async def generate_resolution_plan(arguments: Dict) -> Dict:
     """
     Generate a full resolution plan from enriched ticket context.
@@ -30,14 +33,20 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
     Output: ResolutionPlan dict (stored in session memory)
     """
     ticket_id = arguments["ticket_id"]
+    print(f"\n{'='*60}")
+    print(f"[PLANNING] *** PHASE 4: DECISION & PLANNING ***")
+    print(f"[PLANNING] Generating resolution plan for ticket: {ticket_id}")
     ticket = await app.memory.get("session", "current_ticket")
     classification = await app.memory.get("session", "classification_result")
     enrichment = await app.memory.get("session", "enriched_ticket")
 
     if not ticket or not classification:
+        print(f"[PLANNING] ERROR: Missing context for ticket {ticket_id} (ticket={bool(ticket)}, classification={bool(classification)})")
         raise ValueError(f"Missing context for ticket {ticket_id}")
 
     plan_id = f"PLAN-{uuid.uuid4().hex[:8].upper()}"
+    print(f"[PLANNING] Generated plan_id: {plan_id}")
+    print(f"[PLANNING] Calling AI to generate resolution plan (category={classification.get('category')}, complexity={enrichment.get('estimated_resolution_complexity') if enrichment else 'unknown'})...")
 
     response: ResolutionPlan = await app.ai(
         system=(
@@ -63,6 +72,10 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
     )
 
     plan_dict = response.model_dump()
+    print(f"[PLANNING] Plan generated: {len(response.steps)} steps, risk={response.risk_level}, estimated={response.total_estimated_minutes}min, requires_approval={response.requires_approval}")
+    for i, step in enumerate(response.steps):
+        print(f"[PLANNING]   Step {i+1}: {step.action} (skill={step.skill_or_tool}, ~{step.expected_duration_minutes}min)")
+
     await app.memory.set("session", "resolution_plan", plan_dict)
     await app.memory.set("session", "decision_reasoning", plan_dict.get("risk_description", ""))
 
@@ -71,6 +84,9 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
         response.risk_level == "high"
         or response.requires_approval
     ):
+        print(f"[PLANNING] Risk level '{response.risk_level}' or approval required — escalating to human_review_agent")
+        print(f"[PLANNING] Justification: {response.approval_justification or 'High-risk plan'}")
+        print(f"{'='*60}\n")
         await app.memory.set("session", "requires_human_review", True)
         await app.memory.set(
             "run",
@@ -82,6 +98,8 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
             input={"ticket_id": ticket_id, "stage": "planning"},
         )
     else:
+        print(f"[PLANNING] Risk OK (level={response.risk_level}) — handing off to execution_agent")
+        print(f"{'='*60}\n")
         await app.call(
             "execution_agent.execute_plan",
             input={"ticket_id": ticket_id},
@@ -91,6 +109,8 @@ async def generate_resolution_plan(arguments: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("assess_risk_and_impact")
+@track_slow_operation("assess_risk_and_impact", warn_seconds=5.0, critical_seconds=15.0)
 async def assess_risk_and_impact(arguments: Dict) -> Dict:
     """
     Stand-alone risk assessment called when a plan needs re-evaluation.
@@ -110,6 +130,8 @@ async def assess_risk_and_impact(arguments: Dict) -> Dict:
 
 
 @app.reasoner()
+@handle_errors("recommend_execution_path")
+@track_slow_operation("recommend_execution_path", warn_seconds=5.0, critical_seconds=15.0)
 async def recommend_execution_path(arguments: Dict) -> Dict:
     """
     Given multiple resolution options, recommend the optimal path.

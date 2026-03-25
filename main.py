@@ -45,6 +45,17 @@ async def start_all_agents() -> None:
     ]
 
     logger.info("Starting %d agents …", len(agents))
+    print(f"\n{'='*60}")
+    print(f"  AUTONOMOUS IT AGENT PIPELINE STARTING")
+    print(f"  Launching {len(agents)} agents...")
+    agent_names = [
+        "ingestion_agent", "classification_agent", "enrichment_agent",
+        "decision_planning_agent", "execution_agent", "validation_agent",
+        "communication_agent", "learning_agent", "human_review_agent",
+    ]
+    for name in agent_names:
+        print(f"  [STARTUP] Registering: {name}")
+    print(f"{'='*60}\n")
 
     # Each AgentField app exposes a .start() coroutine that blocks while
     # listening for work from the control plane.
